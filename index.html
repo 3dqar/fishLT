@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="lt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>FishLT — Žvejyba Vilniuje</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-icon">🎣</span>
+    <span class="brand-name">FishLT</span>
+  </div>
+  <div class="topbar-actions">
+    <select id="langSelect" class="lang-select">
+      <option value="lt">LT</option>
+      <option value="ru">RU</option>
+      <option value="pl">PL</option>
+    </select>
+    <button id="themeToggle" class="icon-btn" title="Tema">🌙</button>
+  </div>
+</header>
+
+<main class="app-layout">
+
+  <!-- LEFT / TOP: recommendations panel -->
+  <section class="panel panel-left" id="view-today">
+    <button id="bigButton" class="big-cta">
+      <span class="big-cta-emoji">📍</span>
+      <span id="bigButtonText">KUR VAŽIUOTI DABAR?</span>
+    </button>
+
+    <div class="card" id="recCard">
+      <div class="rec-header">
+        <h2 data-i18n="recTitle">Rekomendacija šiandien</h2>
+        <span class="updated" id="updatedAt">—</span>
+      </div>
+
+      <div id="recBody" class="rec-body">
+        <p class="muted" data-i18n="loading">Kraunama...</p>
+      </div>
+    </div>
+
+    <div class="card" id="modeCard">
+      <h3 data-i18n="modesTitle">Režimai</h3>
+      <div class="modes-row">
+        <button class="chip-btn" id="modeNewbie" data-i18n="modeNewbie">Naujokas</button>
+        <button class="chip-btn" id="modeFish" data-i18n="modeFish">Pasirink žuvį</button>
+        <button class="chip-btn" id="modeBudget" data-i18n="modeBudget">Biudžetas</button>
+      </div>
+      <div id="modeExtra" class="mode-extra"></div>
+    </div>
+
+    <div class="card" id="locationsCard">
+      <h3 data-i18n="placesTitle">Vietos netoliese</h3>
+      <div id="placesList" class="places-list"></div>
+    </div>
+  </section>
+
+  <!-- RIGHT / BOTTOM: map -->
+  <section class="panel panel-right" id="view-map">
+    <div id="map"></div>
+  </section>
+
+  <!-- Fish info view (mobile tab) -->
+  <section class="panel panel-fish" id="view-fish" hidden>
+    <h2 data-i18n="fishTitle">Žuvys</h2>
+    <div id="fishList" class="fish-list"></div>
+  </section>
+
+  <!-- Gear view -->
+  <section class="panel panel-gear" id="view-gear" hidden>
+    <h2 data-i18n="gearTitle">Mano įranga</h2>
+    <div id="gearList" class="gear-list"></div>
+  </section>
+
+  <!-- Settings view -->
+  <section class="panel panel-settings" id="view-settings" hidden>
+    <h2 data-i18n="settingsTitle">Nustatymai</h2>
+    <div class="card">
+      <label data-i18n="chooseStyle">Žvejybos būdas</label>
+      <div class="modes-row" id="styleButtonsSettings"></div>
+    </div>
+    <div class="card">
+      <label data-i18n="themeLabel">Tema</label>
+      <div class="modes-row">
+        <button class="chip-btn" id="themeDarkBtn" data-i18n="themeDark">Tamsi</button>
+        <button class="chip-btn" id="themeLightBtn" data-i18n="themeLight">Šviesi</button>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- bottom nav (mobile) -->
+<nav class="bottom-nav">
+  <button class="nav-btn active" data-view="today">
+    <span class="nav-icon">🏠</span><span data-i18n="navToday">Šiandien</span>
+  </button>
+  <button class="nav-btn" data-view="map">
+    <span class="nav-icon">🗺️</span><span data-i18n="navMap">Žemėlapis</span>
+  </button>
+  <button class="nav-btn" data-view="fish">
+    <span class="nav-icon">🐟</span><span data-i18n="navFish">Žuvis</span>
+  </button>
+  <button class="nav-btn" data-view="gear">
+    <span class="nav-icon">🎒</span><span data-i18n="navGear">Įranga</span>
+  </button>
+  <button class="nav-btn" data-view="settings">
+    <span class="nav-icon">⚙️</span><span data-i18n="navSettings">Nustatymai</span>
+  </button>
+</nav>
+
+<!-- first run modal -->
+<div class="modal-overlay" id="styleModal">
+  <div class="modal">
+    <h2 data-i18n="chooseStyle">Pasirink savo žvejybos būdą</h2>
+    <div class="modal-options">
+      <button class="modal-option" data-style="float" data-i18n="styleFloat">🟡 Plūdė</button>
+      <button class="modal-option" data-style="feeder" data-i18n="styleFeeder">⚪ Feederis / dugninė</button>
+      <button class="modal-option" data-style="spin" data-i18n="styleSpin">🔵 Spiningas</button>
+      <button class="modal-option" data-style="all" data-i18n="styleAll">🟢 Viskas</button>
+    </div>
+  </div>
+</div>
+
+<!-- place detail modal -->
+<div class="modal-overlay" id="placeModal">
+  <div class="modal modal-wide" id="placeModalContent"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
