@@ -842,3 +842,293 @@ function renderModeExtra(){
 }
 
 document.addEventListener("DOMContentLoaded", init);
+
+/* ============== LIVE UPGRADE v2: more real data, still frontend-only ============== */
+let LIVE_STATUS = { openMeteo:false, meteoLt:false, overpass:false, hydro:false, lastUpdate:null, sources:[] };
+let LIVE_WATERS = [];
+let LIVE_HYDRO = null;
+
+function moonPhaseName(lang){
+  const lp = 2551443; // lunar period seconds
+  const now = new Date();
+  const newMoon = new Date('2000-01-06T18:14:00Z');
+  const phase = (((now.getTime() - newMoon.getTime()) / 1000) % lp) / lp;
+  const names = {
+    lt:['Jaunatis','Augantis mėnulis','Pilnatis','Dylantis mėnulis'],
+    ru:['Новолуние','Растущая луна','Полнолуние','Убывающая луна'],
+    pl:['Nów','Przybywający księżyc','Pełnia','Ubywający księżyc']
+  };
+  let idx = phase < 0.25 ? 0 : phase < 0.5 ? 1 : phase < 0.75 ? 2 : 3;
+  return { label:(names[lang]||names.lt)[idx], value:phase };
+}
+
+async function fetchOpenMeteoLive(lat,lng){
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m,wind_speed_10m,wind_direction_10m,pressure_msl,precipitation,cloud_cover&hourly=temperature_2m,wind_speed_10m,wind_direction_10m,pressure_msl,precipitation,cloud_cover&daily=sunrise,sunset&timezone=auto&wind_speed_unit=ms&forecast_days=2`;
+  const res = await fetch(url);
+  if(!res.ok) throw new Error('Open-Meteo failed');
+  const data = await res.json();
+  const hourly = (data.hourly?.time||[]).map((time,i)=>({
+    time, hour:new Date(time).getHours(),
+    temperature:data.hourly.temperature_2m?.[i],
+    windSpeed:data.hourly.wind_speed_10m?.[i],
+    windDir:data.hourly.wind_direction_10m?.[i],
+    pressure:data.hourly.pressure_msl?.[i],
+    rain:data.hourly.precipitation?.[i],
+    cloud:data.hourly.cloud_cover?.[i]
+  })).slice(0,36);
+  return {
+    temperature: data.current.temperature_2m,
+    windSpeed: data.current.wind_speed_10m,
+    windDir: data.current.wind_direction_10m,
+    pressure: data.current.pressure_msl,
+    rain: data.current.precipitation,
+    cloud: data.current.cloud_cover,
+    sunrise: data.daily.sunrise[0].slice(11,16),
+    sunset: data.daily.sunset[0].slice(11,16),
+    hourly,
+    source:'Open-Meteo',
+    sourceTime:new Date().toISOString()
+  };
+}
+
+async function fetchMeteoLtVilnius(){
+  const res = await fetch('https://api.meteo.lt/v1/places/vilnius/forecasts/long-term');
+  if(!res.ok) throw new Error('Meteo.lt failed');
+  const data = await res.json();
+  const list = data.forecastTimestamps || [];
+  const now = Date.now();
+  const closest = list.reduce((best,x)=>{
+    const diff = Math.abs(new Date(x.forecastTimeUtc+'Z').getTime()-now);
+    return !best || diff < best.diff ? {x,diff} : best;
+  }, null)?.x;
+  if(!closest) throw new Error('Meteo.lt empty');
+  return {
+    temperature: closest.airTemperature,
+    windSpeed: closest.windSpeed,
+    windDir: closest.windDirection,
+    pressure: closest.seaLevelPressure,
+    rain: closest.totalPrecipitation,
+    cloud: closest.cloudCover,
+    condition: closest.conditionCode,
+    source:'Meteo.lt LHMT',
+    sourceTime:data.forecastCreationTimeUtc || closest.forecastTimeUtc,
+    forecastTime:closest.forecastTimeUtc
+  };
+}
+
+async function fetchOverpassWaters(lat,lng){
+  const query = `[out:json][timeout:18];(
+    way(around:18000,${lat},${lng})["natural"="water"]["name"];
+    relation(around:18000,${lat},${lng})["natural"="water"]["name"];
+    way(around:18000,${lat},${lng})["waterway"="river"]["name"];
+  );out center tags 25;`;
+  const url = 'https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(query);
+  const res = await fetch(url);
+  if(!res.ok) throw new Error('Overpass failed');
+  const data = await res.json();
+  const seen = new Set();
+  LIVE_WATERS = (data.elements||[]).map(e=>({
+    name:e.tags?.name,
+    type:e.tags?.water || e.tags?.waterway || 'water',
+    lat:e.center?.lat || e.lat,
+    lng:e.center?.lon || e.lon
+  })).filter(w=>w.name && w.lat && w.lng && !seen.has(w.name) && seen.add(w.name)).slice(0,20);
+  return LIVE_WATERS;
+}
+
+async function fetchNearestHydro(lat,lng){
+  try{
+    const stations = await fetch('https://api.meteo.lt/v1/hydro-stations').then(r=>r.ok?r.json():[]);
+    const nearest = stations.map(s=>({ ...s, dist:haversine(lat,lng,s.coordinates.latitude,s.coordinates.longitude) }))
+      .sort((a,b)=>a.dist-b.dist)[0];
+    if(!nearest || nearest.dist>50) return null;
+    const obs = await fetch(`https://api.meteo.lt/v1/hydro-stations/${nearest.code}/observations/measured/latest`).then(r=>r.ok?r.json():null);
+    LIVE_HYDRO = obs ? { station:nearest, observations:obs.observations?.slice(-3) || [] } : null;
+    return LIVE_HYDRO;
+  }catch(e){ return null; }
+}
+
+async function fetchWeather(lat,lng){
+  LIVE_STATUS = { openMeteo:false, meteoLt:false, overpass:false, hydro:false, lastUpdate:new Date(), sources:[] };
+  let open=null, meteo=null;
+  try{ open = await fetchOpenMeteoLive(lat,lng); LIVE_STATUS.openMeteo=true; LIVE_STATUS.sources.push('Open-Meteo'); }catch(e){}
+  try{ meteo = await fetchMeteoLtVilnius(); LIVE_STATUS.meteoLt=true; LIVE_STATUS.sources.push('Meteo.lt/LHMT'); }catch(e){}
+  fetchOverpassWaters(lat,lng).then(()=>{ LIVE_STATUS.overpass=true; if(!LIVE_STATUS.sources.includes('OpenStreetMap/Overpass')) LIVE_STATUS.sources.push('OpenStreetMap/Overpass'); renderAll(); }).catch(()=>{});
+  fetchNearestHydro(lat,lng).then(h=>{ if(h){ LIVE_STATUS.hydro=true; if(!LIVE_STATUS.sources.includes('Meteo.lt hydro')) LIVE_STATUS.sources.push('Meteo.lt hydro'); renderAll(); } }).catch(()=>{});
+
+  state.weatherFailed = !open && !meteo;
+  const base = open || meteo || defaultWeather();
+  const merged = {
+    ...base,
+    meteoLt: meteo,
+    openMeteo: open,
+    moon: moonPhaseName(state.lang),
+    updatedAt: new Date().toISOString(),
+    source: LIVE_STATUS.sources.join(' + ') || 'fallback'
+  };
+  if(open && meteo){
+    merged.lhmtCompare = {
+      temp: meteo.temperature,
+      wind: meteo.windSpeed,
+      pressure: meteo.pressure,
+      forecastTime: meteo.forecastTime
+    };
+  }
+  return merged;
+}
+
+function hourlyScore(w, fishKey, style){
+  return computeScore({type:'lake', fish:fishKey?[fishKey]:['perch']}, w, 0, fishKey, style);
+}
+
+function getBestWindow(weather, fishKey, style){
+  if(!weather?.hourly?.length) return (state.lang==='lt'?'Rytas arba vakaras':state.lang==='ru'?'Утро или вечер':'Rano albo wieczór');
+  const future = weather.hourly.filter(h=>new Date(h.time).getTime() >= Date.now()).slice(0,24);
+  const ranked = future.map(h=>({ ...h, sc:hourlyScore({temperature:h.temperature,windSpeed:h.windSpeed,windDir:h.windDir,pressure:h.pressure,rain:h.rain,cloud:h.cloud}, fishKey, style) })).sort((a,b)=>b.sc-a.sc);
+  const best = ranked[0];
+  if(!best) return '—';
+  const d = new Date(best.time);
+  const hh = String(d.getHours()).padStart(2,'0');
+  const hh2 = String((d.getHours()+2)%24).padStart(2,'0');
+  return `${hh}:00–${hh2}:00 (${best.sc}/100)`;
+}
+
+function computeScore(loc, weather, distanceKm, fishKey, style){
+  let score = 50;
+  const hour = new Date().getHours();
+  const month = new Date().getMonth()+1;
+  const wind = Number(weather.windSpeed ?? 0); // m/s in v2
+  const rain = Number(weather.rain ?? 0);
+  const cloud = Number(weather.cloud ?? 50);
+  const pressure = Number(weather.pressure ?? 1013);
+
+  if(weather.temperature>=10 && weather.temperature<=23) score+=14;
+  else if(weather.temperature<4 || weather.temperature>29) score-=16;
+  else score+=3;
+  if(wind>=1.5 && wind<=5.5) score+=14;
+  else if(wind<1.5) score+=3;
+  else if(wind<=8) score-=4;
+  else if(wind<=11) score-=14;
+  else score-=28;
+  if(pressure>=1009 && pressure<=1023) score+=9;
+  else if(pressure<998) score-=14;
+  else score-=5;
+  if(rain===0) score+=5;
+  else if(rain<=0.6) score+=2;
+  else if(rain>3) score-=18;
+  else score-=8;
+  if(cloud>=35 && cloud<=80) score+=7;
+  else if(cloud<15) score-=2;
+  if((hour>=4 && hour<=8) || (hour>=18 && hour<=22)) score+=12;
+  else if(hour>=11 && hour<=15) score-=10;
+  if(month>=4 && month<=10) score+=6; else score-=10;
+  if(distanceKm<7) score+=6; else if(distanceKm>30) score-=10;
+  if(loc.type==='river') score+=2;
+  const moon = weather.moon?.value ?? moonPhaseName(state.lang).value;
+  if(moon>0.42 && moon<0.58) score+=3; // near full moon
+  if(fishKey){
+    const rule = FISH_RULES[fishKey];
+    const methods = Array.isArray(rule.method)?rule.method:[rule.method];
+    if(style && style!=='all' && !methods.includes(style)) score-=14;
+    if(loc.fish && !loc.fish.includes(fishKey)) score-=18;
+  } else if(style && style!=='all' && loc.fish){
+    const supportsStyle = loc.fish.some(f=>{
+      const m = FISH_RULES[f].method; const methods = Array.isArray(m)?m:[m]; return methods.includes(style);
+    });
+    if(!supportsStyle) score-=10;
+  }
+  if(state.gear?.length){
+    if(style==='float' && state.gear.includes('float')) score+=3;
+    if(style==='feeder' && state.gear.includes('feeder')) score+=3;
+    if(style==='spin' && state.gear.includes('spin')) score+=3;
+  }
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function renderRecommendation(){
+  const body = document.getElementById('recBody');
+  const { loc, score, dist, fish } = bestLocation();
+  const cls = scoreClass(score);
+  const rule = FISH_RULES[fish];
+  const methods = Array.isArray(rule.method)?rule.method:[rule.method];
+  const methodLabel = methods.map(m=>METHOD_LABEL[m][state.lang]||METHOD_LABEL[m].lt).join(' / ');
+  let verdict = score>=60 ? t('worthIt') : score<35 ? t('notWorthIt') : t('medium');
+  const fishName = t(fish);
+  const zonesText = loc.zones.map(z=>t(z)).join(', ');
+  const bestTime = getBestWindow(state.weather, fish, state.fishingStyle);
+  const src = state.weather?.source || 'fallback';
+  const moon = state.weather?.moon?.label || moonPhaseName(state.lang).label;
+  let extraNote = '';
+  if(state.mode==='newbie') extraNote = `<div class="rec-explain">${t('newbieTip')}</div>`;
+  if(score<35) extraNote += `<div class="rec-explain">${state.lang==='lt'?`Šiandien geriau nevažiuoti. Score ${score}/100.`:state.lang==='ru'?`Сегодня лучше не ехать. Счёт ${score}/100.`:`Lepiej nie jechać dzisiaj. Wynik ${score}/100.`}</div>`;
+  if(state.mode==='budget' && state.selectedBudget){
+    const sugg = BUDGET_SUGGESTIONS[state.selectedBudget][state.lang] || BUDGET_SUGGESTIONS[state.selectedBudget].lt;
+    extraNote += `<div class="rec-explain"><strong>${t('budgetSuggestionTitle')}</strong> ${sugg}</div>`;
+  }
+  const lhmt = state.weather?.lhmtCompare ? `<div class="rec-explain"><strong>LHMT/Meteo.lt:</strong> ${state.weather.lhmtCompare.temp}°C, ${state.weather.lhmtCompare.wind} m/s, ${Math.round(state.weather.lhmtCompare.pressure)} hPa</div>` : '';
+  const hydro = LIVE_HYDRO ? `<div class="rec-explain"><strong>Hidro:</strong> ${LIVE_HYDRO.station.name} (${LIVE_HYDRO.station.waterBody || ''}) · ${LIVE_HYDRO.station.dist.toFixed(1)} km</div>` : '';
+  body.innerHTML = `
+    <div class="score-wrap"><div class="score-circle ${cls}">${score}</div><div><div class="score-verdict">${verdict}</div><div class="score-sub">${loc.name} · ${dist.toFixed(1)} ${t('km')}</div></div></div>
+    <div class="rec-grid">
+      <div><div class="label">${t('bestTime')}</div><div class="value">${bestTime}</div></div>
+      <div><div class="label">Live šaltiniai</div><div class="value">${src}</div></div>
+      <div><div class="label">${t('fish')}</div><div class="value">${fishName}</div></div>
+      <div><div class="label">${t('method')}</div><div class="value">${methodLabel}</div></div>
+      <div><div class="label">${t('bait')}</div><div class="value">${rule.baits[0]}</div></div>
+      <div><div class="label">${t('baitAlt')}</div><div class="value">${rule.baits.slice(1).join(', ')||'—'}</div></div>
+      <div><div class="label">${t('depth')}</div><div class="value">${rule.depth[0]}–${rule.depth[1]} m</div></div>
+      <div><div class="label">${t('fromShore')}</div><div class="value">${rule.shore[0]}–${rule.shore[1]} m</div></div>
+      <div><div class="label">${t('side')}</div><div class="value">${loc.side}</div></div>
+      <div><div class="label">${t('coords')}</div><div class="value">${loc.lat.toFixed(4)}, ${loc.lng.toFixed(4)}</div></div>
+      <div><div class="label">Mėnulis</div><div class="value">${moon}</div></div>
+      <div><div class="label">Vandens telkiniai OSM</div><div class="value">${LIVE_WATERS.length ? LIVE_WATERS.length+' aplink' : 'kraunama / nėra'}</div></div>
+    </div>
+    ${extraNote}${lhmt}${hydro}
+    <div class="rec-explain">${zonesText}</div>
+    ${state.weatherFailed ? `<div class="rec-disclaimer">⚠️ ${t('weatherFail')}</div>` : ''}
+    <div class="rec-disclaimer">${t('disclaimer')} ALIS/Žvejo Gidas neturi stabilaus viešo API, todėl leidimai/įžuvinimas rodomi kaip nuorodos tikrinimui.</div>
+    <div class="rec-links"><a class="link-btn" href="${loc.guideUrl}" target="_blank" rel="noopener">${t('checkFishingGuide')}</a><a class="link-btn" href="${loc.alisUrl}" target="_blank" rel="noopener">${t('checkAlis')}</a><a class="link-btn" href="https://www.zvejozinynas.lt/" target="_blank" rel="noopener">${t('rules')}</a></div>
+  `;
+  document.getElementById('updatedAt').textContent = `${t('updated')}: ${fmtTime(new Date())}`;
+}
+
+function renderPlacesList(){
+  const list = document.getElementById('placesList');
+  if(!state.userLoc){ list.innerHTML = `<p class="muted">${t('locating')}</p>`; return; }
+  const rows = LOCATIONS.map(loc=>{
+    const dist = haversine(state.userLoc.lat, state.userLoc.lng, loc.lat, loc.lng);
+    const sc = computeScore(loc, state.weather||defaultWeather(), dist, null, state.fishingStyle);
+    return { loc, dist, sc };
+  }).sort((a,b)=>b.sc-a.sc || a.dist-b.dist);
+  const liveBox = `<div class="rec-disclaimer">Live: ${LIVE_STATUS.sources.join(' + ') || 'kraunama'} · OSM vandens telkinių: ${LIVE_WATERS.length}</div>`;
+  list.innerHTML = liveBox + rows.map(r=>`<div class="place-row" data-id="${r.loc.id}"><div><div class="place-name">${r.loc.name}</div><div class="place-meta">${t(typeKey(r.loc.type))} · ${r.dist.toFixed(1)} ${t('km')}</div></div><div class="place-score-dot dot-${scoreClass(r.sc)}">${r.sc}</div></div>`).join('');
+  list.querySelectorAll('.place-row').forEach(row=>row.addEventListener('click',()=>openPlaceModal(row.getAttribute('data-id'))));
+}
+
+function renderMapMarkers(){
+  if(!mapInstance) return;
+  mapMarkers.forEach(m=>mapInstance.removeLayer(m)); mapMarkers=[];
+  if(state.userLoc){
+    const me = L.circleMarker([state.userLoc.lat,state.userLoc.lng],{radius:8,color:'#2d8cff',fillColor:'#2d8cff',fillOpacity:0.9,weight:2}).addTo(mapInstance).bindPopup(state.lang==='lt'?'Jūs':(state.lang==='ru'?'Вы':'Ty'));
+    mapMarkers.push(me);
+  }
+  LOCATIONS.forEach(loc=>{
+    const dist = state.userLoc ? haversine(state.userLoc.lat,state.userLoc.lng,loc.lat,loc.lng) : 0;
+    const sc = computeScore(loc,state.weather||defaultWeather(),dist,null,state.fishingStyle);
+    const marker = L.circleMarker([loc.lat,loc.lng],{radius:10,color:colorForScore(sc),fillColor:colorForScore(sc),fillOpacity:0.85,weight:2}).addTo(mapInstance);
+    marker.bindPopup(`<strong>${loc.name}</strong><br>${t('score')}: ${sc}/100<br><small>${t('disclaimer')}</small>`);
+    marker.on('click',()=>openPlaceModal(loc.id)); mapMarkers.push(marker);
+  });
+  LIVE_WATERS.forEach(w=>{
+    const marker = L.circleMarker([w.lat,w.lng],{radius:5,color:'#38bdf8',fillColor:'#38bdf8',fillOpacity:0.45,weight:1}).addTo(mapInstance);
+    marker.bindPopup(`<strong>${w.name}</strong><br>OSM live: ${w.type}`); mapMarkers.push(marker);
+  });
+}
+
+async function loadWeatherAndRender(){
+  state.weather = await fetchWeather(state.userLoc.lat, state.userLoc.lng);
+  renderAll(); if(mapInstance) renderMapMarkers();
+}
+
+// auto-refresh live data every 15 minutes
+setInterval(()=>{ if(state.userLoc) loadWeatherAndRender(); }, 15*60*1000);

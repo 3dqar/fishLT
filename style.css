@@ -319,3 +319,8 @@ body{
   }
   .bottom-nav{display:none;}
 }
+
+/* live v2 small additions */
+.rec-grid .value{word-break:break-word;}
+.rec-disclaimer strong,.rec-explain strong{color:var(--accent)}
+@media (max-width: 520px){.rec-grid{grid-template-columns:1fr}.score-circle{width:64px;height:64px}}
